@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+# gh-autoview — mark boring PR files as "Viewed" on GitHub so the review UI
+# collapses them. Which files are "boring" comes from a per-repo config file
+# written in .gitignore syntax (matched with `git check-ignore`, so the
+# semantics are exactly what you already know from .gitignore).
+#
+# Usage: gh autoview [PR] [options]        (or: gh-autoview ...)
+#
+#   PR                 PR number, URL, or branch. Default: PR for current branch.
+#   -n, --dry-run      Show what would be marked, change nothing.
+#   -l, --list         Show every PR file with its current viewed state and match.
+#   -u, --unmark       Un-view matching files instead (undo).
+#   -c, --config FILE  Pattern file (default: .autoview, then .github/autoview,
+#                      then ~/.config/gh-autoview/default).
+#   -R, --repo O/R     Repo to use (default: derived from current directory).
+#   -h, --help
+#
+# Config file example (.autoview at repo root):
+#   # C# / TS tests
+#   *Tests.cs
+#   *.test.ts
+#   *.test.tsx
+#   MAP.md
+#   pnpm-lock.yaml
+#   !src/critical.test.ts       # negation works too
+set -euo pipefail
+
+die()  { printf 'gh-autoview: %s\n' "$*" >&2; exit 1; }
+info() { printf '%s\n' "$*" >&2; }
+
+usage() { sed -n '2,/^set -euo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; }
+
+PR="" DRY=0 LIST=0 UNMARK=0 CONFIG="" REPO=""
+while (($#)); do
+  case "$1" in
+    -n|--dry-run) DRY=1 ;;
+    -l|--list)    LIST=1 ;;
+    -u|--unmark)  UNMARK=1 ;;
+    -c|--config)  CONFIG="${2:?--config needs a file}"; shift ;;
+    -R|--repo)    REPO="${2:?--repo needs OWNER/REPO}"; shift ;;
+    -h|--help)    usage; exit 0 ;;
+    -*)           die "unknown option: $1 (try --help)" ;;
+    *)            [[ -z "$PR" ]] || die "unexpected argument: $1"; PR="$1" ;;
+  esac
+  shift
+done
+
+command -v gh  >/dev/null || die "gh not found"
+command -v jq  >/dev/null || die "jq not found"
+command -v git >/dev/null || die "git not found"
+
+# ---- locate config -------------------------------------------------------
+if [[ -z "$CONFIG" ]]; then
+  root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  for cand in "${root:+$root/.autoview}" "${root:+$root/.github/autoview}" \
+              "${XDG_CONFIG_HOME:-$HOME/.config}/gh-autoview/default"; do
+    [[ -n "$cand" && -f "$cand" ]] && { CONFIG="$cand"; break; }
+  done
+fi
+[[ -n "$CONFIG" && -f "$CONFIG" ]] || die "no config found (.autoview / .github/autoview / ~/.config/gh-autoview/default, or --config FILE)"
+grep -qv -E '^\s*(#|$)' "$CONFIG" || die "config $CONFIG has no patterns"
+
+# ---- resolve repo + PR ---------------------------------------------------
+repoargs=()
+[[ -n "$REPO" ]] && repoargs=(-R "$REPO")
+prjson="$(gh pr view ${PR:+"$PR"} "${repoargs[@]}" --json number,url 2>/dev/null)" \
+  || die "could not resolve PR${PR:+ '$PR'} (are you on a branch with an open PR? try: gh autoview <number>)"
+prnum="$(jq -r .number <<<"$prjson")"
+prurl="$(jq -r .url <<<"$prjson")"
+owner="$(sed -E 's#https://[^/]+/([^/]+)/([^/]+)/pull/.*#\1#' <<<"$prurl")"
+name="$(sed -E 's#https://[^/]+/([^/]+)/([^/]+)/pull/.*#\2#' <<<"$prurl")"
+
+# ---- fetch PR node id + all files with their viewed state -----------------
+query='query($o:String!,$r:String!,$n:Int!,$c:String){
+  repository(owner:$o,name:$r){ pullRequest(number:$n){ id
+    files(first:100,after:$c){ nodes{ path viewerViewedState } pageInfo{ hasNextPage endCursor } } } } }'
+files='[]' cursor=null prid=""
+while :; do
+  page="$(gh api graphql -f query="$query" -F o="$owner" -F r="$name" -F n="$prnum" -F c="$cursor")" \
+    || die "GraphQL query failed"
+  prid="$(jq -r .data.repository.pullRequest.id <<<"$page")"
+  files="$(jq -c --argjson acc "$files" '$acc + .data.repository.pullRequest.files.nodes' <<<"$page")"
+  jq -e .data.repository.pullRequest.files.pageInfo.hasNextPage <<<"$page" >/dev/null || break
+  cursor="$(jq -r .data.repository.pullRequest.files.pageInfo.endCursor <<<"$page")"
+done
+[[ -n "$prid" && "$prid" != null ]] || die "PR #$prnum has no node id?"
+
+# ---- match paths against config using real gitignore semantics -----------
+tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+git init -q "$tmp/r"
+matched="$(jq -r '.[].path' <<<"$files" \
+  | git -C "$tmp/r" -c core.excludesFile="$CONFIG" check-ignore --no-index --stdin 2>/dev/null || true)"
+matched_json="$(printf '%s\n' "$matched" | jq -R -s 'split("\n") | map(select(length>0))')"
+
+# annotate: {path, state, match}
+ann="$(jq -c --argjson m "$matched_json" 'map(. + {match: (.path as $p | $m | index($p) != null)})' <<<"$files")"
+
+if ((LIST)); then
+  jq -r '.[] | [(if .match then "MATCH" else "-" end), .viewerViewedState, .path] | @tsv' <<<"$ann" | column -t -s $'\t'
+  exit 0
+fi
+
+if ((UNMARK)); then
+  targets="$(jq -c '[.[] | select(.match and .viewerViewedState=="VIEWED") | .path]' <<<"$ann")"
+  mutation=unmarkFileAsViewed; verb="un-view"; done_verb="un-viewed"
+else
+  targets="$(jq -c '[.[] | select(.match and .viewerViewedState!="VIEWED") | .path]' <<<"$ann")"
+  mutation=markFileAsViewed; verb="mark viewed"; done_verb="marked viewed"
+fi
+
+total="$(jq length <<<"$files")"; nmatch="$(jq '[.[]|select(.match)]|length' <<<"$ann")"; ntarget="$(jq length <<<"$targets")"
+info "PR #$prnum ($owner/$name): $total files, $nmatch match $(basename "$CONFIG"), $ntarget to $verb"
+if ((ntarget == 0)); then exit 0; fi
+jq -r '.[] | "  " + .' <<<"$targets" >&2
+((DRY)) && { info "(dry run — nothing changed)"; exit 0; }
+
+# ---- batch mutations: many aliased calls per request ---------------------
+batch=25
+for ((i=0; i<ntarget; i+=batch)); do
+  chunk="$(jq -c ".[$i:$((i+batch))]" <<<"$targets")"
+  body="$(jq -r --arg m "$mutation" 'to_entries | map("f\(.key): \($m)(input:{pullRequestId:$id, path:\(.value|tojson)}){ clientMutationId }") | join("\n")' <<<"$chunk")"
+  gh api graphql -f query="mutation(\$id:ID!){ $body }" -F id="$prid" >/dev/null \
+    || die "mutation failed on batch starting at item $i"
+done
+info "done: $ntarget file(s) $done_verb on $prurl/files"

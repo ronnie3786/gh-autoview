@@ -1,0 +1,10 @@
+# Example gh-autoview config. Copy to .autoview (or .github/autoview) at your
+# repo root. Uses .gitignore syntax; matching files get marked "Viewed".
+*Tests.cs
+*.test.ts
+*.test.tsx
+*.snap
+pnpm-lock.yaml
+package-lock.json
+yarn.lock
+!src/critical.test.ts   # negation: never auto-view this one
