@@ -20,7 +20,9 @@
 #
 # Pattern lookup: --config FILE, then <root>/.autoview, <root>/.github/autoview,
 # ~/.config/gh-autoview/<owner>-<repo>, ~/.config/gh-autoview/default, then the
-# linguist-generated lines of the repo's .gitattributes. Negation works.
+# built-in codegen globs plus the linguist-generated lines of the repo's
+# .gitattributes. Negation works. A config file replaces the built-in globs;
+# they only apply when no config file is present.
 set -euo pipefail
 
 die()  { printf 'gh-autoview: %s\n' "$*" >&2; exit 1; }
@@ -60,16 +62,19 @@ prurl="$(jq -r .url <<<"$prjson")"
 owner="$(sed -E 's#https://[^/]+/([^/]+)/([^/]+)/pull/.*#\1#' <<<"$prurl")"
 name="$(sed -E 's#https://[^/]+/([^/]+)/([^/]+)/pull/.*#\2#' <<<"$prurl")"
 
-# ---- patterns from .gitattributes ---------------------------------------
-# linguist-generated is the repo's own "no human needs to read this" signal,
-# so it doubles as the default pattern source when no config file is present.
+# Apollo operation documents live under Sources/Codegen/ next to the Swift they
+# generate. Nothing in the filename says "generated" (they are not *.g.*), so
+# the path is the only reliable signal. Only applied when no config file exists.
+DEFAULT_PATTERNS=('**/Sources/Codegen/**/*.graphql' '**/Sources/Codegen/**/*.gql')
+
+# linguist-generated is the repo's own "no human needs to read this" signal.
 gitattributes_patterns() {
   local out="$1"
   gh api "repos/$owner/$name/contents/.gitattributes" --jq '.content' 2>/dev/null \
     | base64 -d 2>/dev/null \
     | awk '{ for (i = 2; i <= NF; i++)
                if ($i == "linguist-generated" || $i == "linguist-generated=true") { print $1; next } }' \
-    > "$out" || true
+    >> "$out" || true
   grep -qv -E '^[[:space:]]*(#|$)' "$out" 2>/dev/null
 }
 
@@ -88,10 +93,13 @@ else
   if [[ -n "$config" ]]; then
     source_desc="$config"
   else
-    config="$tmp/gitattributes.autoview"
-    gitattributes_patterns "$config" \
-      || die "no patterns found: no .autoview anywhere, and no linguist-generated lines in $owner/$name's .gitattributes"
-    source_desc="$owner/$name .gitattributes (linguist-generated)"
+    config="$tmp/defaults.autoview"
+    printf '%s\n' "${DEFAULT_PATTERNS[@]}" > "$config"
+    if gitattributes_patterns "$config"; then
+      source_desc="built-in codegen globs + $owner/$name .gitattributes"
+    else
+      source_desc="built-in codegen globs (no config, no linguist-generated)"
+    fi
   fi
 fi
 grep -qv -E '^[[:space:]]*(#|$)' "$config" || die "$source_desc has no patterns"

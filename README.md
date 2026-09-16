@@ -69,7 +69,14 @@ syntax (see [`.autoview.example`](.autoview.example)):
 
 Config lookup order: `--config FILE`, `.autoview`, `.github/autoview`,
 `~/.config/gh-autoview/<owner>-<repo>`, `~/.config/gh-autoview/default`, then the
-`linguist-generated` lines of the repo's `.gitattributes`.
+built-in codegen globs plus the `linguist-generated` lines of the repo's
+`.gitattributes`.
+
+The built-in globs are `**/Sources/Codegen/**/*.graphql` and
+`**/Sources/Codegen/**/*.gql` — Apollo operation documents live next to the
+Swift they generate and carry no `.g.` in the filename, so the directory is the
+only signal. A config file **replaces** the built-ins; they only apply when no
+config file is found.
 
 The two `~/.config/gh-autoview/` paths let you keep repo-specific patterns out
 of the work repo, so `git status` stays clean.
