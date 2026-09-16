@@ -6,7 +6,22 @@ UI collapses them and you only read what matters.
 
 Which files are "boring" comes from a per-repo config file written in
 `.gitignore` syntax — matching is done with `git check-ignore`, so the
-semantics are exactly the ones you already know.
+semantics are exactly the ones you already know. If a repo has no config file,
+it falls back to the `linguist-generated` lines already declared in the repo's
+`.gitattributes`.
+
+Fork of [`OperatorJack/gh-autoview`](https://github.com/OperatorJack/gh-autoview).
+Changes here: **dry run is the default** and needs `--apply` to write,
+`.gitattributes` as a pattern source, per-repo configs under
+`~/.config/gh-autoview/<owner>-<repo>`, and a post-write verification pass.
+
+## Install (local fork)
+
+    cd ~/Documents/Development/gh-autoview
+    gh extension install .
+
+`gh` symlinks the working copy instead of copying it, so edits take effect on
+the next run — no reinstall.
 
 ## Requirements
 
@@ -18,25 +33,22 @@ semantics are exactly the ones you already know.
 
 Works on Linux, macOS, and WSL. On native Windows, run it under Git Bash or WSL.
 
-## Install
-
-    gh extension install OperatorJack/gh-autoview
-
 ## Use
 
     cd ~/git/some-repo            # on a branch with an open PR
-    gh autoview -n                # dry run
-    gh autoview                   # mark matching files viewed
+    gh autoview 123               # dry run (default)
+    gh autoview 123 --apply       # mark matching files viewed
     gh autoview 123 -l            # list all files of PR 123 with state/match
-    gh autoview 123 -u            # undo: un-view matching files
+    gh autoview 123 -u --apply    # undo: un-view matching files
     gh autoview -h                # all options
 
 Options:
 
     PR                 PR number, URL, or branch. Default: PR for current branch.
-    -n, --dry-run      Show what would be marked, change nothing.
-    -l, --list         Show every PR file with its current viewed state and match.
-    -u, --unmark       Un-view matching files instead (undo).
+    -a, --apply        Actually change viewed state. Without it: a dry run.
+    -n, --dry-run      Explicit dry run; this is already the default.
+    -l, --list         Show every PR file with its viewed state and match.
+    -u, --unmark       Un-view matching files instead (undo). Needs --apply.
     -c, --config FILE  Pattern file to use.
     -R, --repo O/R     Repo to use (default: derived from current directory).
 
@@ -55,8 +67,12 @@ syntax (see [`.autoview.example`](.autoview.example)):
     pnpm-lock.yaml
     !src/important.test.tsx   # negation supported
 
-Config lookup order: `--config FILE`, `.autoview`, `.github/autoview`, then
-`~/.config/gh-autoview/default` as a fallback for repos without one.
+Config lookup order: `--config FILE`, `.autoview`, `.github/autoview`,
+`~/.config/gh-autoview/<owner>-<repo>`, `~/.config/gh-autoview/default`, then the
+`linguist-generated` lines of the repo's `.gitattributes`.
+
+The two `~/.config/gh-autoview/` paths let you keep repo-specific patterns out
+of the work repo, so `git status` stays clean.
 
 ## How it works
 
@@ -64,7 +80,8 @@ Config lookup order: `--config FILE`, `.autoview`, `.github/autoview`, then
    `viewerViewedState` via the GraphQL API (paginated).
 2. Feeds the paths through `git check-ignore` using your config as the
    exclude file.
-3. Sends `markFileAsViewed` / `unmarkFileAsViewed` mutations in batches of 25.
+3. Sends `markFileAsViewed` / `unmarkFileAsViewed` mutations in batches of 25,
+then re-reads the viewed state and fails loudly if anything didn't take.
 
 ## License
 
