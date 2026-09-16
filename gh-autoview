@@ -4,8 +4,7 @@
 # needs to read stay in your review queue.
 #
 # Which files are "boring" comes from a per-repo pattern file written in
-# .gitignore syntax (matched with `git check-ignore`), or from the repo's own
-# .gitattributes linguist-generated declarations.
+# .gitignore syntax, matched with `git check-ignore`.
 #
 # Usage: gh autoview [PR] [options]        (or: gh-autoview ...)
 #
@@ -20,9 +19,9 @@
 #
 # Pattern lookup: --config FILE, then <root>/.autoview, <root>/.github/autoview,
 # ~/.config/gh-autoview/<owner>-<repo>, ~/.config/gh-autoview/default, then the
-# built-in codegen globs plus the linguist-generated lines of the repo's
-# .gitattributes. Negation works. A config file replaces the built-in globs;
-# they only apply when no config file is present.
+# built-in policy: everything that is not hand-written Swift, plus generated
+# Swift (*.g.swift) and unit tests (*Test.swift, *Tests.swift). A config file
+# replaces the built-in policy; negation works in all of them.
 set -euo pipefail
 
 die()  { printf 'gh-autoview: %s\n' "$*" >&2; exit 1; }
@@ -65,18 +64,19 @@ name="$(sed -E 's#https://[^/]+/([^/]+)/([^/]+)/pull/.*#\2#' <<<"$prurl")"
 # Apollo operation documents live under Sources/Codegen/ next to the Swift they
 # generate. Nothing in the filename says "generated" (they are not *.g.*), so
 # the path is the only reliable signal. Only applied when no config file exists.
-DEFAULT_PATTERNS=('**/Sources/Codegen/**/*.graphql' '**/Sources/Codegen/**/*.gql')
-
-# linguist-generated is the repo's own "no human needs to read this" signal.
-gitattributes_patterns() {
-  local out="$1"
-  gh api "repos/$owner/$name/contents/.gitattributes" --jq '.content' 2>/dev/null \
-    | base64 -d 2>/dev/null \
-    | awk '{ for (i = 2; i <= NF; i++)
-               if ($i == "linguist-generated" || $i == "linguist-generated=true") { print $1; next } }' \
-    >> "$out" || true
-  grep -qv -E '^[[:space:]]*(#|$)' "$out" 2>/dev/null
-}
+# Default policy: every file, minus the Swift you actually wrote. Generated
+# Swift (*.g.swift) and unit tests (*Test.swift, *Tests.swift) come back in.
+# Last matching pattern wins, so the order below is the policy. The '!**/'
+# line keeps directories out of the ignore set -- without it git refuses to
+# re-include any file under a directory matched by '**/*'.
+DEFAULT_PATTERNS=(
+  '**/*'
+  '!**/'
+  '!**/*.swift'
+  '**/*.g.swift'
+  '**/*Test.swift'
+  '**/*Tests.swift'
+)
 
 # ---- locate patterns ----------------------------------------------------
 if [[ -n "$CONFIG" ]]; then
@@ -95,11 +95,7 @@ else
   else
     config="$tmp/defaults.autoview"
     printf '%s\n' "${DEFAULT_PATTERNS[@]}" > "$config"
-    if gitattributes_patterns "$config"; then
-      source_desc="built-in codegen globs + $owner/$name .gitattributes"
-    else
-      source_desc="built-in codegen globs (no config, no linguist-generated)"
-    fi
+    source_desc="built-in policy (all non-Swift + generated Swift + unit tests)"
   fi
 fi
 grep -qv -E '^[[:space:]]*(#|$)' "$config" || die "$source_desc has no patterns"
@@ -128,8 +124,11 @@ load_files
 
 # ---- match paths against the patterns using real gitignore semantics -----
 git init -q "$tmp/r"
+# core.ignoreCase=false: on macOS git defaults to case-insensitive matching,
+# which makes '*.Test.swift' swallow names like 'IntegrateLatest.swift'.
 matched="$(jq -r '.[].path' <<<"$FILES" \
-  | git -C "$tmp/r" -c core.excludesFile="$config" check-ignore --no-index --stdin 2>/dev/null || true)"
+  | git -C "$tmp/r" -c core.excludesFile="$config" -c core.ignoreCase=false \
+      check-ignore --no-index --stdin 2>/dev/null || true)"
 matched_json="$(printf '%s\n' "$matched" | jq -R -s 'split("\n") | map(select(length>0))')"
 ann="$(jq -c --argjson m "$matched_json" 'map(. + {match: (.path as $p | $m | index($p) != null)})' <<<"$FILES")"
 

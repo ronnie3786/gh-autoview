@@ -6,9 +6,9 @@ UI collapses them and you only read what matters.
 
 Which files are "boring" comes from a per-repo config file written in
 `.gitignore` syntax — matching is done with `git check-ignore`, so the
-semantics are exactly the ones you already know. If a repo has no config file,
-it falls back to the `linguist-generated` lines already declared in the repo's
-`.gitattributes`.
+semantics are exactly the ones you already know. With no config file, the
+default policy is: mark everything that is not hand-written Swift, plus
+generated Swift (`*.g.swift`) and unit tests (`*Test.swift`, `*Tests.swift`).
 
 Fork of [`OperatorJack/gh-autoview`](https://github.com/OperatorJack/gh-autoview).
 Changes here: **dry run is the default** and needs `--apply` to write,
@@ -69,14 +69,22 @@ syntax (see [`.autoview.example`](.autoview.example)):
 
 Config lookup order: `--config FILE`, `.autoview`, `.github/autoview`,
 `~/.config/gh-autoview/<owner>-<repo>`, `~/.config/gh-autoview/default`, then the
-built-in codegen globs plus the `linguist-generated` lines of the repo's
-`.gitattributes`.
+built-in default policy.
 
-The built-in globs are `**/Sources/Codegen/**/*.graphql` and
-`**/Sources/Codegen/**/*.gql` — Apollo operation documents live next to the
-Swift they generate and carry no `.g.` in the filename, so the directory is the
-only signal. A config file **replaces** the built-ins; they only apply when no
-config file is found.
+A config file **replaces** the default policy, so a repo that wants its own list
+can opt out entirely. The policy itself is five gitignore lines — last match
+wins, and `!**/` is load-bearing (without it git refuses to re-include files
+under a directory matched by `**/*`):
+
+    **/*             every file
+    !**/             ...except directories
+    !**/*.swift      ...and except hand-written Swift
+    **/*.g.swift     ...but mark generated Swift
+    **/*Test.swift   ...and unit tests
+    **/*Tests.swift
+
+Because the default is "everything that is not Swift", pointing this at a
+non-Swift repo would mark nearly every file. Give such a repo a config file.
 
 The two `~/.config/gh-autoview/` paths let you keep repo-specific patterns out
 of the work repo, so `git status` stays clean.
