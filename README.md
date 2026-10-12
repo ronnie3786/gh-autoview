@@ -11,13 +11,19 @@ default policy is: mark everything that is not hand-written Swift, plus
 generated Swift (`*.g.swift`) and unit tests (`*Test.swift`, `*Tests.swift`).
 
 Fork of [`OperatorJack/gh-autoview`](https://github.com/OperatorJack/gh-autoview).
-Changes here: **dry run is the default** and needs `--apply` to write,
-`.gitattributes` as a pattern source, per-repo configs under
-`~/.config/gh-autoview/<owner>-<repo>`, and a post-write verification pass.
+Changes here: **dry run is the default** and needs `--apply` to write, per-repo
+configs under `~/.config/gh-autoview/<owner>-<repo>`, and a post-write
+verification pass.
 
-## Install (local fork)
+## Install
 
-    cd ~/Documents/Development/gh-autoview
+    gh extension install ronnie3786/gh-autoview
+
+Update with `gh extension upgrade autoview`. For local development, clone the
+repo and install the working copy instead:
+
+    git clone https://github.com/ronnie3786/gh-autoview.git
+    cd gh-autoview
     gh extension install .
 
 `gh` symlinks the working copy instead of copying it, so edits take effect on
@@ -25,7 +31,7 @@ the next run — no reinstall.
 
 ## Requirements
 
-- **Bash ≥ 4.4** (macOS's stock `/bin/bash` 3.2 is too old — `brew install bash`)
+- **Bash 3.2+** (macOS's stock `/bin/bash` works as-is, no `brew install bash`)
 - [`gh`](https://cli.github.com) (authenticated with `repo` scope)
 - [`jq`](https://jqlang.github.io/jq/)
 - `git`
